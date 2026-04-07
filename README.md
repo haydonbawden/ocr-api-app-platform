@@ -73,29 +73,23 @@ If you still see container exits on larger scanned PDFs, move to a 2 GB instance
 
 ## Job tracking and retry behavior
 
-This bundle now supports optional job tracking via `job_id`:
+This bundle supports optional job tracking via `job_id`:
 
 - send `job_id` as a query parameter, or `X-Job-ID` as a request header
 - the app records job status in `/tmp/ocr-api/job_registry.json`
-- duplicate requests with the same `job_id` will not loop forever
+- a job that has failed twice will not be reattempted again
 
-Behavior:
-- first request for a `job_id`: processes normally
-- if that attempt fails, one more attempt is allowed for the same `job_id`
-- if the second attempt fails, later requests for the same `job_id` return an error payload instead of reprocessing
-- if a job is already processing, the app returns a 409 error
-- if a job already succeeded, the app returns a 409 error
+## Merge API endpoints
 
-Successful OCR responses include:
-- `X-Job-ID`
-- `X-OCR-Attempt`
+This bundle now also includes:
 
+- `POST /merge`
+  - accepts repeated multipart `files` fields
+  - merges PDFs with `qpdf`
+  - returns `merged.pdf`
 
-### Update: duplicate handling relaxed
-
-- Duplicate or repeated requests with the same `job_id` are now allowed
-- The app no longer blocks:
-  - in-progress jobs
-  - previously successful jobs
-- Only restriction remaining:
-  - a job that has failed twice will not be retried again
+- `POST /merge-ocr`
+  - accepts repeated multipart `files` fields
+  - merges PDFs with `qpdf`
+  - runs OCRmyPDF on the merged result
+  - returns `merged-searchable.pdf`
