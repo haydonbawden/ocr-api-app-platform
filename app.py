@@ -134,6 +134,8 @@ def build_ocr_command(
         "ocrmypdf",
         "--language",
         language,
+        "--jobs",
+        "1",
         "--optimize",
         str(optimize),
         "--output-type",

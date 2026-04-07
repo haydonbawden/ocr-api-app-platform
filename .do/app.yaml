@@ -10,7 +10,7 @@ services:
       deploy_on_push: true
     http_port: 8080
     instance_count: 1
-    instance_size_slug: apps-s-1vcpu-0.5gb
+    instance_size_slug: apps-s-1vcpu-1gb
     routes:
       - path: /
     health_check:
@@ -34,7 +34,7 @@ services:
         value: "INFO"
         scope: RUN_TIME
       - key: WEB_CONCURRENCY
-        value: "2"
+        value: "1"
         scope: RUN_TIME
       - key: GUNICORN_TIMEOUT
         value: "930"

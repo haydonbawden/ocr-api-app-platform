@@ -58,3 +58,14 @@ curl -X POST "http://localhost:8080/ocr?language=eng&deskew=true&rotate_pages=tr
 - Local disk is ephemeral on App Platform. This app processes files in `/tmp` and streams the result back immediately.
 - For larger workflows, the next upgrade is to store outputs in DigitalOcean Spaces and return a signed URL instead of the file itself.
 - For non-English OCR, install extra `tesseract-ocr-<lang>` packages in the Dockerfile and pass `language=<lang>` to the endpoint.
+
+
+## Resource tuning update
+
+This bundle has been updated for App Platform OCR stability:
+
+- OCRmyPDF now runs with `--jobs 1` to reduce peak memory usage
+- `.do/app.yaml` now targets `apps-s-1vcpu-1gb`
+- `WEB_CONCURRENCY` in `.do/app.yaml` is set to `1`
+
+If you still see container exits on larger scanned PDFs, move to a 2 GB instance.
