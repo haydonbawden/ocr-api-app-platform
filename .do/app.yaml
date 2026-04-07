@@ -1,0 +1,41 @@
+name: ocr-api
+region: sgp
+
+services:
+  - name: web
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      branch: main
+      deploy_on_push: true
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    routes:
+      - path: /
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 20
+      period_seconds: 30
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      - key: API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: MAX_UPLOAD_MB
+        value: "50"
+        scope: RUN_TIME
+      - key: OCR_TIMEOUT_SECONDS
+        value: "900"
+        scope: RUN_TIME
+      - key: LOG_LEVEL
+        value: "INFO"
+        scope: RUN_TIME
+      - key: WEB_CONCURRENCY
+        value: "2"
+        scope: RUN_TIME
+      - key: GUNICORN_TIMEOUT
+        value: "930"
+        scope: RUN_TIME
