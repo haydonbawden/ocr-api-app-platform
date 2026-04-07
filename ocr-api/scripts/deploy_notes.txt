@@ -1,0 +1,12 @@
+DigitalOcean App Platform basic steps:
+
+1. Create a GitHub repository and push this project.
+2. In DigitalOcean: Create -> Apps -> GitHub.
+3. Choose the repository and branch.
+4. Confirm Dockerfile deployment.
+5. Set the API_KEY secret in the app settings.
+6. Deploy.
+7. Test with curl against /ocr using X-API-Key.
+
+Recommended next upgrade:
+- Add Spaces for output storage and signed URLs.
