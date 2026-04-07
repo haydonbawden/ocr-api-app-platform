@@ -69,3 +69,33 @@ This bundle has been updated for App Platform OCR stability:
 - `WEB_CONCURRENCY` in `.do/app.yaml` is set to `1`
 
 If you still see container exits on larger scanned PDFs, move to a 2 GB instance.
+
+
+## Job tracking and retry behavior
+
+This bundle now supports optional job tracking via `job_id`:
+
+- send `job_id` as a query parameter, or `X-Job-ID` as a request header
+- the app records job status in `/tmp/ocr-api/job_registry.json`
+- duplicate requests with the same `job_id` will not loop forever
+
+Behavior:
+- first request for a `job_id`: processes normally
+- if that attempt fails, one more attempt is allowed for the same `job_id`
+- if the second attempt fails, later requests for the same `job_id` return an error payload instead of reprocessing
+- if a job is already processing, the app returns a 409 error
+- if a job already succeeded, the app returns a 409 error
+
+Successful OCR responses include:
+- `X-Job-ID`
+- `X-OCR-Attempt`
+
+
+### Update: duplicate handling relaxed
+
+- Duplicate or repeated requests with the same `job_id` are now allowed
+- The app no longer blocks:
+  - in-progress jobs
+  - previously successful jobs
+- Only restriction remaining:
+  - a job that has failed twice will not be retried again
