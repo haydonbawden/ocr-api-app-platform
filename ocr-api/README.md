@@ -85,3 +85,13 @@ The app normalizes both internally.
 - `POST /merge-ocr`
 
 Both support `job_id` and `X-Job-ID`.
+
+
+## Page count API endpoint
+
+This bundle now also includes:
+
+- `POST /page-count`
+  - accepts either a single multipart `file` field or repeated multipart `files` fields
+  - counts pages using `qpdf --show-npages`
+  - returns JSON only
