@@ -108,3 +108,24 @@ Supported field names include:
 - indexed names such as `files[0]`, `files[1]`
 
 This is intended to make integrations from Make and Gravity Forms more tolerant of differing multipart encodings.
+
+
+## Merge + autorotate endpoint
+
+This bundle now also includes:
+
+- `POST /merge-autorotate`
+  - accepts one or many PDFs
+  - merges them
+  - detects page orientation with Tesseract OSD
+  - rotates sideways pages upright
+  - returns `merged-upright.pdf`
+
+Recommended flow:
+1. `POST /merge-autorotate`
+2. `POST /ocr` with fast OCR settings (`deskew=false`, `rotate_pages=false`, `optimize=0`)
+
+### Dependency note
+This endpoint uses:
+- PyMuPDF (`fitz`)
+- Pillow (`PIL`)

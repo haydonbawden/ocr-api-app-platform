@@ -1,13 +1,17 @@
 import hashlib
 import json
+import io
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import re
 import time
 import uuid
+import fitz
 from pathlib import Path
+from PIL import Image
 from typing import List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
@@ -119,7 +123,7 @@ def root():
     return {
         "name": APP_NAME,
         "status": "ok",
-        "endpoints": {"health": "/health", "ocr": "/ocr", "merge": "/merge", "merge_ocr": "/merge-ocr", "page_count": "/page-count"},
+        "endpoints": {"health": "/health", "ocr": "/ocr", "merge": "/merge", "merge_ocr": "/merge-ocr", "page_count": "/page-count", "merge_autorotate": "/merge-autorotate"},
     }
 
 
@@ -260,6 +264,46 @@ def build_pdf_response(path: str, filename: str, background_tasks: BackgroundTas
 
 
 
+def detect_page_rotation_degrees(page: fitz.Page) -> int:
+    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+    img = Image.open(io.BytesIO(pix.tobytes("png")))
+    tmp_dir = tempfile.mkdtemp(prefix="osd-", dir=TMP_DIR)
+    img_path = os.path.join(tmp_dir, "page.png")
+    try:
+        img.save(img_path, format="PNG")
+        result = subprocess.run(
+            ["tesseract", img_path, "stdout", "--psm", "0"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        osd_text = (result.stdout or "") + "\n" + (result.stderr or "")
+        match = re.search(r"Rotate:\s*(\d+)", osd_text)
+        if match:
+            degrees = int(match.group(1)) % 360
+            if degrees in (0, 90, 180, 270):
+                return degrees
+        return 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def autorotate_pdf(input_path: str, output_path: str) -> list[int]:
+    src = fitz.open(input_path)
+    applied: list[int] = []
+    try:
+        for page in src:
+            detected = detect_page_rotation_degrees(page)
+            if detected:
+                page.set_rotation((page.rotation - detected) % 360)
+            applied.append(detected)
+        src.save(output_path)
+    finally:
+        src.close()
+    return applied
+
+
 @app.post("/page-count", dependencies=[Depends(verify_api_key)])
 async def page_count_pdf_files(
     request: Request,
@@ -331,6 +375,99 @@ async def page_count_pdf_files(
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+        for upload in uploads:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+
+
+@app.post("/merge-autorotate", dependencies=[Depends(verify_api_key)])
+async def merge_autorotate_pdf_files(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    job_id: Optional[str] = Query(default=None),
+    x_job_id: Optional[str] = Header(default=None),
+):
+    tracking_job_id, attempts = begin_job(job_id, x_job_id)
+    request_id = str(uuid.uuid4())
+    work_dir = tempfile.mkdtemp(prefix="merge-autorotate-", dir=TMP_DIR)
+    merged_path = os.path.join(work_dir, "merged.pdf")
+    rotated_path = os.path.join(work_dir, "merged-upright.pdf")
+    uploads = []
+    try:
+        uploads = await extract_uploaded_files_from_request(request)
+        total_bytes = 0
+        saved_paths = []
+        for idx, upload in enumerate(uploads, start=1):
+            if upload.content_type not in ("application/pdf", "application/octet-stream"):
+                raise HTTPException(status_code=400, detail="Only PDF uploads are supported")
+            file_path = os.path.join(work_dir, f"input-{idx}.pdf")
+            total_bytes += save_upload_to_disk(upload, file_path)
+            ensure_pdf_header(file_path)
+            saved_paths.append(file_path)
+
+        logger.info(
+            "merge_autorotate_start request_id=%s job_id=%s attempt=%s file_count=%s total_bytes=%s",
+            request_id, tracking_job_id, attempts, len(saved_paths), total_bytes
+        )
+
+        merge_started = time.time()
+        merge_pdfs_qpdf(saved_paths, merged_path)
+        merge_elapsed_ms = int((time.time() - merge_started) * 1000)
+
+        rotate_started = time.time()
+        applied_rotations = autorotate_pdf(merged_path, rotated_path)
+        rotate_elapsed_ms = int((time.time() - rotate_started) * 1000)
+
+        if not os.path.exists(rotated_path) or os.path.getsize(rotated_path) == 0:
+            update_job_registry(tracking_job_id, "failed", attempts, "Autorotated output was not created")
+            raise HTTPException(
+                status_code=500,
+                detail={"message": "Autorotated output was not created", "job_id": tracking_job_id, "attempts": attempts},
+            )
+
+        rotated_pages = sum(1 for d in applied_rotations if d)
+        update_job_registry(tracking_job_id, "success", attempts, None)
+        logger.info(
+            "merge_autorotate_success request_id=%s job_id=%s attempt=%s merge_elapsed_ms=%s rotate_elapsed_ms=%s rotated_pages=%s output_bytes=%s",
+            request_id, tracking_job_id, attempts, merge_elapsed_ms, rotate_elapsed_ms, rotated_pages, os.path.getsize(rotated_path)
+        )
+
+        def cleanup():
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+        background_tasks.add_task(cleanup)
+        return build_pdf_response(
+            rotated_path,
+            "merged-upright.pdf",
+            background_tasks,
+            {
+                "X-Job-ID": tracking_job_id,
+                "X-Merge-Autorotate-Attempt": str(attempts),
+                "X-Rotated-Pages": str(rotated_pages),
+            },
+        )
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        update_job_registry(tracking_job_id, "failed", attempts, "Merge+autorotate processing timed out")
+        logger.error("merge_autorotate_timeout request_id=%s job_id=%s attempt=%s", request_id, tracking_job_id, attempts)
+        raise HTTPException(
+            status_code=504,
+            detail={"message": "Merge+autorotate processing timed out", "job_id": tracking_job_id, "attempts": attempts},
+        )
+    except HTTPException:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+    except Exception as e:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        update_job_registry(tracking_job_id, "failed", attempts, str(e)[:1000] or "Merge+autorotate failed")
+        logger.exception("merge_autorotate_unhandled_exception request_id=%s job_id=%s attempt=%s", request_id, tracking_job_id, attempts)
+        raise HTTPException(
+            status_code=500,
+            detail={"message": "Merge+autorotate internal server error", "job_id": tracking_job_id, "attempts": attempts},
+        )
+    finally:
         for upload in uploads:
             try:
                 upload.file.close()
