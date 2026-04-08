@@ -119,7 +119,7 @@ def root():
     return {
         "name": APP_NAME,
         "status": "ok",
-        "endpoints": {"health": "/health", "ocr": "/ocr", "merge": "/merge", "merge_ocr": "/merge-ocr", "page_count": "/page-count"},
+        "endpoints": {"health": "/health", "ocr": "/ocr", "merge": "/merge", "merge_ocr": "/merge-ocr"},
     }
 
 
@@ -177,22 +177,6 @@ def build_ocr_command(input_path: str, output_path: str, language: str, force_oc
     return cmd
 
 
-
-def get_pdf_page_count(path: str) -> int:
-    result = subprocess.run(
-        ["qpdf", "--show-npages", path],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "PDF page count failed")
-    try:
-        return int((result.stdout or "").strip())
-    except ValueError as e:
-        raise RuntimeError("Invalid page count output from qpdf") from e
-
-
 def merge_pdfs_qpdf(input_paths: list[str], output_path: str) -> None:
     cmd = ["qpdf", "--empty", "--pages", *input_paths, "--", output_path]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -213,87 +197,6 @@ def build_pdf_response(path: str, filename: str, background_tasks: BackgroundTas
     for k, v in headers.items():
         response.headers[k] = v
     return response
-
-
-
-
-@app.post("/page-count", dependencies=[Depends(verify_api_key)])
-async def page_count_pdf_files(
-    files: Optional[List[UploadFile]] = File(default=None),
-    file: Optional[UploadFile] = File(default=None),
-    job_id: Optional[str] = Query(default=None),
-    x_job_id: Optional[str] = Header(default=None),
-):
-    tracking_job_id = get_tracking_job_id(job_id, x_job_id)
-    request_id = str(uuid.uuid4())
-    work_dir = tempfile.mkdtemp(prefix="page-count-", dir=TMP_DIR)
-    uploads = []
-    try:
-        uploads = normalize_uploaded_files(files, file)
-        total_pages = 0
-        total_bytes = 0
-        file_results = []
-
-        logger.info(
-            "page_count_start request_id=%s job_id=%s file_count=%s",
-            request_id,
-            tracking_job_id,
-            len(uploads),
-        )
-
-        for idx, upload in enumerate(uploads, start=1):
-            if upload.content_type not in ("application/pdf", "application/octet-stream"):
-                raise HTTPException(status_code=400, detail="Only PDF uploads are supported")
-            file_path = os.path.join(work_dir, f"input-{idx}.pdf")
-            file_bytes = save_upload_to_disk(upload, file_path)
-            ensure_pdf_header(file_path)
-            pages = get_pdf_page_count(file_path)
-            total_pages += pages
-            total_bytes += file_bytes
-            file_results.append(
-                {
-                    "filename": upload.filename or f"input-{idx}.pdf",
-                    "pages": pages,
-                    "bytes": file_bytes,
-                }
-            )
-
-        logger.info(
-            "page_count_success request_id=%s job_id=%s file_count=%s total_pages=%s total_bytes=%s",
-            request_id,
-            tracking_job_id,
-            len(file_results),
-            total_pages,
-            total_bytes,
-        )
-
-        return {
-            "job_id": tracking_job_id,
-            "file_count": len(file_results),
-            "total_pages": total_pages,
-            "total_bytes": total_bytes,
-            "files": file_results,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("page_count_unhandled_exception request_id=%s job_id=%s", request_id, tracking_job_id)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "message": "PDF page count failed",
-                "job_id": tracking_job_id,
-                "error": str(e)[:1000],
-            },
-        )
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        for upload in uploads:
-            try:
-                upload.file.close()
-            except Exception:
-                pass
 
 
 @app.post("/merge", dependencies=[Depends(verify_api_key)])
