@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 APP_NAME = "ocr-api"
@@ -119,7 +119,7 @@ def root():
     return {
         "name": APP_NAME,
         "status": "ok",
-        "endpoints": {"health": "/health", "ocr": "/ocr", "merge": "/merge", "merge_ocr": "/merge-ocr"},
+        "endpoints": {"health": "/health", "ocr": "/ocr", "merge": "/merge", "merge_ocr": "/merge-ocr", "page_count": "/page-count"},
     }
 
 
@@ -177,6 +177,22 @@ def build_ocr_command(input_path: str, output_path: str, language: str, force_oc
     return cmd
 
 
+
+def get_pdf_page_count(path: str) -> int:
+    result = subprocess.run(
+        ["qpdf", "--show-npages", path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "PDF page count failed")
+    try:
+        return int((result.stdout or "").strip())
+    except ValueError as e:
+        raise RuntimeError("Invalid page count output from qpdf") from e
+
+
 def merge_pdfs_qpdf(input_paths: list[str], output_path: str) -> None:
     cmd = ["qpdf", "--empty", "--pages", *input_paths, "--", output_path]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -192,6 +208,49 @@ def normalize_uploaded_files(files: Optional[List[UploadFile]], file: Optional[U
     raise HTTPException(status_code=400, detail="At least one PDF file is required")
 
 
+async def extract_uploaded_files_from_request(request: Request) -> List[UploadFile]:
+    form = await request.form()
+    uploads: List[UploadFile] = []
+
+    preferred_keys = ("file", "files", "files[]")
+    for key in preferred_keys:
+        value = form.getlist(key)
+        for item in value:
+            if hasattr(item, "filename"):
+                uploads.append(item)
+
+    if uploads:
+        return uploads
+
+    # Fallback: accept any multipart file fields, including names like files[0], files[1], etc.
+    for key, item in form.multi_items():
+        if hasattr(item, "filename"):
+            uploads.append(item)
+
+    if uploads:
+        return uploads
+
+    raise HTTPException(status_code=400, detail="At least one PDF file is required")
+
+
+def get_request_value(request: Request, form, query_name: str, default_value: str) -> str:
+    query_value = request.query_params.get(query_name)
+    if query_value is not None and query_value != "":
+        return query_value
+    form_value = form.get(query_name)
+    if form_value is not None and str(form_value) != "":
+        return str(form_value)
+    return default_value
+
+
+def parse_bool_value(value, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def build_pdf_response(path: str, filename: str, background_tasks: BackgroundTasks, headers: dict[str, str]) -> FileResponse:
     response = FileResponse(path=path, media_type="application/pdf", filename=filename, background=background_tasks)
     for k, v in headers.items():
@@ -199,7 +258,88 @@ def build_pdf_response(path: str, filename: str, background_tasks: BackgroundTas
     return response
 
 
+
+
+@app.post("/page-count", dependencies=[Depends(verify_api_key)])
+async def page_count_pdf_files(
+    request: Request,
+    job_id: Optional[str] = Query(default=None),
+    x_job_id: Optional[str] = Header(default=None),
+):
+    tracking_job_id = get_tracking_job_id(job_id, x_job_id)
+    request_id = str(uuid.uuid4())
+    work_dir = tempfile.mkdtemp(prefix="page-count-", dir=TMP_DIR)
+    uploads = []
+    try:
+        uploads = await extract_uploaded_files_from_request(request)
+        total_pages = 0
+        total_bytes = 0
+        file_results = []
+
+        logger.info(
+            "page_count_start request_id=%s job_id=%s file_count=%s",
+            request_id,
+            tracking_job_id,
+            len(uploads),
+        )
+
+        for idx, upload in enumerate(uploads, start=1):
+            if upload.content_type not in ("application/pdf", "application/octet-stream"):
+                raise HTTPException(status_code=400, detail="Only PDF uploads are supported")
+            file_path = os.path.join(work_dir, f"input-{idx}.pdf")
+            file_bytes = save_upload_to_disk(upload, file_path)
+            ensure_pdf_header(file_path)
+            pages = get_pdf_page_count(file_path)
+            total_pages += pages
+            total_bytes += file_bytes
+            file_results.append(
+                {
+                    "filename": upload.filename or f"input-{idx}.pdf",
+                    "pages": pages,
+                    "bytes": file_bytes,
+                }
+            )
+
+        logger.info(
+            "page_count_success request_id=%s job_id=%s file_count=%s total_pages=%s total_bytes=%s",
+            request_id,
+            tracking_job_id,
+            len(file_results),
+            total_pages,
+            total_bytes,
+        )
+
+        return {
+            "job_id": tracking_job_id,
+            "file_count": len(file_results),
+            "total_pages": total_pages,
+            "total_bytes": total_bytes,
+            "files": file_results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("page_count_unhandled_exception request_id=%s job_id=%s", request_id, tracking_job_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "PDF page count failed",
+                "job_id": tracking_job_id,
+                "error": str(e)[:1000],
+            },
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        for upload in uploads:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+
+
 @app.post("/merge", dependencies=[Depends(verify_api_key)])
+, dependencies=[Depends(verify_api_key)])
 async def merge_pdf_files(
     background_tasks: BackgroundTasks,
     files: Optional[List[UploadFile]] = File(default=None),
@@ -213,7 +353,7 @@ async def merge_pdf_files(
     output_path = os.path.join(work_dir, "merged.pdf")
     uploads = []
     try:
-        uploads = normalize_uploaded_files(files, file)
+        uploads = await extract_uploaded_files_from_request(request)
         total_bytes = 0
         saved_paths = []
         for idx, upload in enumerate(uploads, start=1):
@@ -254,17 +394,18 @@ async def merge_pdf_files(
 
 @app.post("/merge-ocr", dependencies=[Depends(verify_api_key)])
 async def merge_and_ocr_pdf_files(
+    request: Request,
     background_tasks: BackgroundTasks,
-    files: Optional[List[UploadFile]] = File(default=None),
-    file: Optional[UploadFile] = File(default=None),
-    language: str = "eng",
-    force_ocr: bool = False,
-    deskew: bool = True,
-    rotate_pages: bool = True,
-    optimize: int = 1,
     job_id: Optional[str] = Query(default=None),
     x_job_id: Optional[str] = Header(default=None),
 ):
+    form = await request.form()
+    language = get_request_value(request, form, "language", "eng")
+    force_ocr = parse_bool_value(request.query_params.get("force_ocr", form.get("force_ocr")), False)
+    deskew = parse_bool_value(request.query_params.get("deskew", form.get("deskew")), True)
+    rotate_pages = parse_bool_value(request.query_params.get("rotate_pages", form.get("rotate_pages")), True)
+    optimize_raw = request.query_params.get("optimize", form.get("optimize"))
+    optimize = int(optimize_raw) if optimize_raw not in (None, "") else 1
     if optimize not in (0, 1, 2, 3):
         raise HTTPException(status_code=400, detail="optimize must be one of: 0, 1, 2, 3")
     tracking_job_id, attempts = begin_job(job_id, x_job_id)
@@ -274,7 +415,7 @@ async def merge_and_ocr_pdf_files(
     output_path = os.path.join(work_dir, "merged-searchable.pdf")
     uploads = []
     try:
-        uploads = normalize_uploaded_files(files, file)
+        uploads = await extract_uploaded_files_from_request(request)
         total_bytes = 0
         saved_paths = []
         for idx, upload in enumerate(uploads, start=1):

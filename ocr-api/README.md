@@ -85,3 +85,26 @@ The app normalizes both internally.
 - `POST /merge-ocr`
 
 Both support `job_id` and `X-Job-ID`.
+
+
+## Page count API endpoint
+
+This bundle now also includes:
+
+- `POST /page-count`
+  - accepts either a single multipart `file` field or repeated multipart `files` fields
+  - counts pages using `qpdf --show-npages`
+  - returns JSON only
+
+
+## Multipart compatibility update
+
+`/merge`, `/merge-ocr`, and `/page-count` now accept a broader range of multipart upload shapes.
+
+Supported field names include:
+- `file`
+- `files`
+- `files[]`
+- indexed names such as `files[0]`, `files[1]`
+
+This is intended to make integrations from Make and Gravity Forms more tolerant of differing multipart encodings.
