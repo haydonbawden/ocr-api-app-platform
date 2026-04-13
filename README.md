@@ -129,3 +129,12 @@ Recommended flow:
 This endpoint uses:
 - PyMuPDF (`fitz`)
 - Pillow (`PIL`)
+
+
+## Autorotate dependency update
+
+This bundle now explicitly installs:
+- `PyMuPDF` for `fitz`
+- `Pillow` for image processing
+
+If a deployment previously failed with `ModuleNotFoundError: No module named 'fitz'`, this updated bundle addresses that by including the required Python dependencies in `requirements.txt`.
