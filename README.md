@@ -71,25 +71,61 @@ This bundle has been updated for App Platform OCR stability:
 If you still see container exits on larger scanned PDFs, move to a 2 GB instance.
 
 
-## Job tracking and retry behavior
+## Single-file and multi-file upload compatibility
 
-This bundle supports optional job tracking via `job_id`:
+`/merge` and `/merge-ocr` accept either:
+- a single multipart file field named `file`
+- multiple multipart file fields named `files`
 
-- send `job_id` as a query parameter, or `X-Job-ID` as a request header
-- the app records job status in `/tmp/ocr-api/job_registry.json`
-- a job that has failed twice will not be reattempted again
+The app normalizes both internally.
 
 ## Merge API endpoints
 
+- `POST /merge`
+- `POST /merge-ocr`
+
+Both support `job_id` and `X-Job-ID`.
+
+
+## Page count API endpoint
+
 This bundle now also includes:
 
-- `POST /merge`
-  - accepts repeated multipart `files` fields
-  - merges PDFs with `qpdf`
-  - returns `merged.pdf`
+- `POST /page-count`
+  - accepts either a single multipart `file` field or repeated multipart `files` fields
+  - counts pages using `qpdf --show-npages`
+  - returns JSON only
 
-- `POST /merge-ocr`
-  - accepts repeated multipart `files` fields
-  - merges PDFs with `qpdf`
-  - runs OCRmyPDF on the merged result
-  - returns `merged-searchable.pdf`
+
+## Multipart compatibility update
+
+`/merge`, `/merge-ocr`, and `/page-count` now accept a broader range of multipart upload shapes.
+
+Supported field names include:
+- `file`
+- `files`
+- `files[]`
+- indexed names such as `files[0]`, `files[1]`
+
+This is intended to make integrations from Make and Gravity Forms more tolerant of differing multipart encodings.
+
+
+## Merge + autorotate endpoint
+
+This bundle now also includes:
+
+- `POST /merge-autorotate`
+  - accepts one or many PDFs
+  - merges them
+  - detects page orientation with Tesseract OSD
+  - rotates sideways pages upright
+  - returns `merged-upright.pdf`
+
+Recommended flow:
+1. `POST /merge-autorotate`
+2. `POST /ocr` with fast OCR settings (`deskew=false`, `rotate_pages=false`, `optimize=0`)
+
+### Dependency note
+This endpoint uses:
+- PyMuPDF (`fitz`)
+- Pillow (`PIL`)
