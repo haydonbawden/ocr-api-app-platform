@@ -304,6 +304,34 @@ def autorotate_pdf(input_path: str, output_path: str) -> list[int]:
     return applied
 
 
+def normalize_single_pdf_for_autorotate(input_path: str, output_path: str) -> tuple[bool, str]:
+    """
+    Try to rewrite a single uploaded PDF through qpdf to normalize malformed object tables.
+    Returns (used_fallback, warning_text).
+    """
+    cmd = ["qpdf", input_path, output_path]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+    warning_text = "\n".join([s for s in [stderr, stdout] if s]).strip()
+
+    if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        return True, warning_text
+
+    # qpdf sometimes emits warnings and still writes an output file that is usable
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 0 and "operation succeeded with warnings" in warning_text:
+        return True, warning_text
+
+    # Not recoverable; leave caller to fall back to original or raise.
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+    return False, warning_text
+
+
+
 @app.post("/page-count", dependencies=[Depends(verify_api_key)])
 async def page_count_pdf_files(
     request: Request,
@@ -413,7 +441,16 @@ async def merge_autorotate_pdf_files(
         )
 
         merge_started = time.time()
-        merge_pdfs_qpdf(saved_paths, merged_path)
+        merge_warning = ""
+        if len(saved_paths) == 1:
+            repaired_single_path = os.path.join(work_dir, "single-normalized.pdf")
+            used_fallback, merge_warning = normalize_single_pdf_for_autorotate(saved_paths[0], repaired_single_path)
+            if used_fallback:
+                shutil.copyfile(repaired_single_path, merged_path)
+            else:
+                shutil.copyfile(saved_paths[0], merged_path)
+        else:
+            merge_pdfs_qpdf(saved_paths, merged_path)
         merge_elapsed_ms = int((time.time() - merge_started) * 1000)
 
         rotate_started = time.time()
@@ -433,6 +470,11 @@ async def merge_autorotate_pdf_files(
             "merge_autorotate_success request_id=%s job_id=%s attempt=%s merge_elapsed_ms=%s rotate_elapsed_ms=%s rotated_pages=%s output_bytes=%s",
             request_id, tracking_job_id, attempts, merge_elapsed_ms, rotate_elapsed_ms, rotated_pages, os.path.getsize(rotated_path)
         )
+        if merge_warning:
+            logger.warning(
+                "merge_autorotate_single_file_qpdf_warning request_id=%s job_id=%s attempt=%s detail=%s",
+                request_id, tracking_job_id, attempts, merge_warning[:2000]
+            )
 
         def cleanup():
             shutil.rmtree(work_dir, ignore_errors=True)

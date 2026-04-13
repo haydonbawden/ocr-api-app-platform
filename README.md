@@ -138,3 +138,15 @@ This bundle now explicitly installs:
 - `Pillow` for image processing
 
 If a deployment previously failed with `ModuleNotFoundError: No module named 'fitz'`, this updated bundle addresses that by including the required Python dependencies in `requirements.txt`.
+
+
+## Single-file malformed PDF tolerance
+
+`POST /merge-autorotate` now tolerates qpdf warnings for malformed **single uploaded PDFs**.
+
+Behavior:
+- if one PDF is uploaded, the service first asks qpdf to normalize/rewrite that one file
+- if qpdf reports warnings but still produces a usable output file, the workflow proceeds
+- for multiple uploaded PDFs, the normal merge path is unchanged
+
+This is intended to avoid rejecting single-file uploads solely because qpdf reports object-table warnings while still producing a usable PDF.
