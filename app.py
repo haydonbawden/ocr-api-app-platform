@@ -14,7 +14,7 @@ from pathlib import Path
 from PIL import Image
 from typing import List, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 APP_NAME = "ocr-api"
