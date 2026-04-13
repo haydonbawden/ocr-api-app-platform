@@ -476,7 +476,7 @@ async def merge_autorotate_pdf_files(
 
 
 @app.post("/merge", dependencies=[Depends(verify_api_key)])
-, dependencies=[Depends(verify_api_key)])
+
 async def merge_pdf_files(
     background_tasks: BackgroundTasks,
     files: Optional[List[UploadFile]] = File(default=None),
